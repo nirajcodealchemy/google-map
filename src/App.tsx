@@ -1,228 +1,618 @@
-import { useCallback, useState } from "react";
-import {
-  APIProvider,
-  useApiIsLoaded,
-  useApiLoadingStatus,
-} from "@vis.gl/react-google-maps";
-import { MapPin, Navigation, Search } from "lucide-react";
-
+import MapControls from "./components/MapControls";
 import GoogleMapView from "./components/GoogleMapView";
-import MapLoader from "./components/MapLoader";
-import MapError from "./components/MapError";
-import { SURAT_LOCATIONS } from "./data/locations";
+import LocationSearch from "./components/LocationSearch";
+import { useNearbyPlaces } from "./hooks/useNearbyPlaces";
+import CategoryFilters from "./components/CategoryFilters";
+import NearbyPlacesList from "./components/NearbyPlacesList";
+import NoResultsModal from "./components/NoResultsModal";
+import {
+  PLACE_CATEGORIES,
+  type NearbyPlace,
+  type PlaceCategory,
+} from "./types/place";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { APIProvider, useApiIsLoaded } from "@vis.gl/react-google-maps";
+import {
+  LocateFixed,
+  MapPinned,
+  Navigation,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
 
 const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY?.trim() ?? "";
+const SURAT_CENTER = { lat: 21.1802, lng: 72.8311 };
 
-function MapApplication() {
-  const status = useApiLoadingStatus();
+function NearbyPlacesApp() {
   const loaded = useApiIsLoaded();
 
-  const [retry, setRetry] = useState(0);
+  const initialSearchStarted = useRef(false);
+  const [radius, setRadius] = useState(2000);
   const [map, setMap] = useState<google.maps.Map | null>(null);
-  const [search, setSearch] = useState("");
+  const { places, loading, error, search } = useNearbyPlaces();
+  const [showNoResultsModal, setShowNoResultsModal] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mobileTab, setMobileTab] = useState<"list" | "map">("list");
+  const [category, setCategory] = useState<PlaceCategory>("restaurant");
+  const [mapType, setMapType] = useState<"roadmap" | "satellite">("roadmap");
+  const [locationLabel, setLocationLabel] = useState("Surat, Gujarat, India");
+  const [locationQuery, setLocationQuery] = useState("");
+  const [center, setCenter] = useState<google.maps.LatLngLiteral>(SURAT_CENTER);
+  const [mapCenter, setMapCenter] =
+    useState<google.maps.LatLngLiteral>(SURAT_CENTER);
+  const [inputError, setInputError] = useState("");
+  const radiusSearchTimeout = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const [locationError, setLocationError] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
 
-  const handleMapReady = useCallback((instance: google.maps.Map | null) => {
-    setMap(instance);
+  const cancelPendingRadiusSearch = useCallback(() => {
+    if (radiusSearchTimeout.current !== null) {
+      clearTimeout(radiusSearchTimeout.current);
+      radiusSearchTimeout.current = null;
+    }
   }, []);
 
-  const places = SURAT_LOCATIONS.filter((place) => {
-    const query = search.trim().toLowerCase();
+  useEffect(
+    () => () => {
+      if (radiusSearchTimeout.current) {
+        clearTimeout(radiusSearchTimeout.current);
+      }
+    },
+    [],
+  );
+  useEffect(() => {
+    return () => {
+      if (radiusSearchTimeout.current !== null) {
+        clearTimeout(radiusSearchTimeout.current);
+      }
+    };
+  }, []);
 
-    return (
-      !query ||
-      place.name.toLowerCase().includes(query) ||
-      place.address.toLowerCase().includes(query) ||
-      place.category.toLowerCase().includes(query)
-    );
-  });
+  const mapSectionRef = useRef<HTMLElement | null>(null);
 
-  const showLocation = (place: (typeof SURAT_LOCATIONS)[number]) => {
-    map?.panTo(place.position);
-    map?.setZoom(15);
+  const startSearch = useCallback(
+    (
+      searchCenter: google.maps.LatLngLiteral,
+      searchRadius: number,
+      searchCategory: PlaceCategory,
+    ) => {
+      cancelPendingRadiusSearch();
+      setSelectedId(null);
+      setShowNoResultsModal(false);
+
+      void search(searchCenter, searchRadius, searchCategory).then(
+        (noResults) => {
+          console.log(noResults);
+          if (noResults) {
+            setShowNoResultsModal(true);
+          }
+        },
+      );
+    },
+    [cancelPendingRadiusSearch, search],
+  );
+
+  const handleMapReady = useCallback(
+    (instance: google.maps.Map | null) => {
+      setMap(instance);
+
+      if (instance && !initialSearchStarted.current) {
+        initialSearchStarted.current = true;
+
+        startSearch(SURAT_CENTER, 2000, "restaurant");
+      }
+    },
+    [startSearch],
+  );
+  const runSearch = useCallback(
+    (nextCenter = center, nextRadius = radius, nextCategory = category) => {
+      startSearch(nextCenter, nextRadius, nextCategory);
+    },
+    [center, radius, category, startSearch],
+  );
+
+  const handleLocationSelect = useCallback(
+    (location: google.maps.LatLngLiteral, label: string) => {
+      setCenter(location);
+      setMapCenter(location);
+      setLocationLabel(label);
+      setSelectedId(null);
+      map?.panTo(location);
+      map?.setZoom(14);
+      runSearch(location, radius, category);
+    },
+    [map, radius, category, runSearch],
+  );
+
+  const handleCategoryChange = (nextCategory: PlaceCategory) => {
+    cancelPendingRadiusSearch();
+    setCategory(nextCategory);
+    startSearch(center, radius, nextCategory);
   };
 
-  if (status === "FAILED") {
+  const handleRadiusChange = (nextRadius: number) => {
+    setRadius(nextRadius);
+    setSelectedId(null);
+
+    // Cancel the previous pending API call.
+    cancelPendingRadiusSearch();
+
+    // Start a new timer after every slider movement.
+    radiusSearchTimeout.current = setTimeout(() => {
+      radiusSearchTimeout.current = null;
+      startSearch(center, nextRadius, category);
+    }, 500);
+  };
+
+  const handlePlaceSelect = (place: NearbyPlace) => {
+    setSelectedId(place.id);
+    setMapCenter(place.position);
+    map?.panTo(place.position);
+    map?.setZoom(16);
+    setMobileTab("map");
+  };
+
+  const handleMapTypeChange = useCallback(
+    (type: "roadmap" | "satellite") => {
+      setMapType(type);
+      map?.setMapTypeId(type);
+    },
+    [map],
+  );
+
+  const handleMapReset = () => {
+    setSelectedId(null);
+    setMapCenter(center);
+    map?.panTo(center);
+    map?.setZoom(13);
+  };
+
+  const handleCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      setLocationError({
+        title: "Location Not Supported",
+        message:
+          "Your browser does not support location access. Please use a modern browser to find nearby places.",
+      });
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        const location = {
+          lat: coords.latitude,
+          lng: coords.longitude,
+        };
+
+        setLocationError(null);
+        setCenter(location);
+        setMapCenter(location);
+        setLocationLabel("Your current location");
+        setMobileTab("map");
+
+        map?.panTo(location);
+        map?.setZoom(14);
+
+        runSearch(location, radius, category);
+
+        setTimeout(() => {
+          mapSectionRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          });
+        }, 100);
+      },
+      (error: GeolocationPositionError) => {
+        console.error("Geolocation error:", error);
+
+        if (!window.isSecureContext) {
+          setLocationError({
+            title: "Secure Connection Required",
+            message:
+              "Your location requires a secure connection. Open this app using HTTPS or localhost, then try again.",
+          });
+          return;
+        }
+
+        switch (error.code) {
+          case error.PERMISSION_DENIED:
+            setLocationError({
+              title: "Location Permission Denied",
+              message:
+                "Location access is blocked. Allow location permission in your browser settings and try again.",
+            });
+            break;
+
+          case error.POSITION_UNAVAILABLE:
+            setLocationError({
+              title: "Location Unavailable",
+              message:
+                "We couldn't determine your current location. Check your device's location services and try again.",
+            });
+            break;
+
+          case error.TIMEOUT:
+            setLocationError({
+              title: "Location Request Timed Out",
+              message:
+                "Finding your location took too long. Please check your connection and try again.",
+            });
+            break;
+
+          default:
+            setLocationError({
+              title: "Unable to Find Location",
+              message:
+                "Something went wrong while accessing your location. Please try again.",
+            });
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      },
+    );
+  };
+
+  if (!loaded) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-50 p-5">
-        <MapError
-          message="The Maps JavaScript API failed to load. Verify your demo key, API configuration, and browser connection."
-          onRetry={() => setRetry((value) => value + 1)}
-        />
+      <main className="flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-blue-100 border-t-blue-600" />
+          <p className="mt-4 text-sm font-medium text-slate-600">
+            Loading Nearby Places Finder...
+          </p>
+        </div>
       </main>
     );
   }
 
-  if (!loaded) {
-    return <MapLoader />;
-  }
-
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
-      <section className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
-        <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="flex max-h-170 min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-100 p-4">
-              <h3 className="text-base font-semibold">Explore locations</h3>
-              <p className="mt-1 text-sm text-slate-500">
-                Find a place in Surat
+      {showNoResultsModal && (
+        <NoResultsModal
+          location={locationLabel}
+          categoryLabel={
+            PLACE_CATEGORIES.find((item) => item.value === category)?.label ??
+            "places"
+          }
+          onClose={() => setShowNoResultsModal(false)}
+        />
+      )}
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3 px-4 py-4 sm:px-6 lg:px-8">
+          <div className="flex items-center gap-3">
+            <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-lg shadow-blue-600/20">
+              <MapPinned size={24} />
+            </span>
+            <div>
+              <h1 className="text-lg font-bold sm:text-xl">Nearby Places</h1>
+              <p className="text-xs text-slate-500">
+                Explore what's around you
               </p>
+            </div>
+          </div>
 
-              <div className="relative mt-4">
-                <Search
-                  size={18}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                />
-                <input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search places..."
-                  aria-label="Search locations"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10"
-                />
+          <button
+            type="button"
+            onClick={handleCurrentLocation}
+            className="inline-flex items-center gap-2 rounded-xl border cursor-pointer border-slate-200 px-3 py-2.5 text-sm font-semibold transition hover:bg-blue-50 hover:text-blue-700"
+          >
+            <LocateFixed size={17} />
+            <span className="hidden sm:inline">Use my location</span>
+          </button>
+        </div>
+      </header>
+
+      <section className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6 lg:px-8">
+        <div className="mb-5">
+          <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
+            Find places near you
+          </h2>
+          <p className="mt-2 text-sm text-slate-500">
+            Search a location, choose a category, and explore nearby results.
+          </p>
+        </div>
+
+        <div className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+          <div className="flex-row justify-between items-center gap-4 sm:flex">
+            <div className="w-full">
+              <label className="mb-2 block text-sm font-semibold">
+                Search location
+              </label>
+              <LocationSearch
+                onQueryChange={setLocationQuery}
+                onLocationSelect={handleLocationSelect}
+                setInputError={setInputError}
+              />
+              <p className="mt-2 truncate text-xs text-slate-500">
+                <Navigation size={13} className="mr-1 inline" />
+                Search center: {locationLabel}
+              </p>
+            </div>
+            <div>
+              <button
+                type="button"
+                onClick={() => runSearch()}
+                disabled={loading || !locationQuery.trim() || !!inputError}
+                className="inline-flex mt-4 sm:w-auto text-nowrap h-[58px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold w-full text-white transition sm:mt-0 hover:bg-blue-700 cursor-pointer disabled:cursor-not-allowed  disabled:opacity-60"
+              >
+                {loading ? (
+                  <RefreshCw size={17} className="animate-spin" />
+                ) : (
+                  <Search size={17} />
+                )}
+                Search nearby
+              </button>
+              <span className="text-sm text-white">
+                {inputError ? "." : ""}
+                {/* {inputError} */}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-5 border-t border-slate-100 pt-5 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.65fr)]">
+            <div>
+              <div className="mb-3 flex items-center gap-2">
+                <SlidersHorizontal size={16} className="text-blue-600" />
+                <h3 className="text-sm font-semibold">Place category</h3>
               </div>
+              <CategoryFilters
+                category={category}
+                onChange={handleCategoryChange}
+              />
             </div>
 
-            <div className="flex items-center justify-between px-4 py-3">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Popular places
-              </span>
-              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
-                {places.length}
-              </span>
-            </div>
-
-            <div className="max-h-[380px] overflow-y-auto px-3 pb-3 lg:max-h-[520px]">
-              {places.length > 0 ? (
-                <div className="space-y-1">
-                  {places.map((place) => (
-                    <button
-                      key={place.id}
-                      onClick={() => showLocation(place)}
-                      className="group flex w-full items-start gap-3 rounded-xl p-3 text-left transition hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600 transition group-hover:bg-blue-100 group-hover:text-blue-700">
-                        <MapPin size={19} />
-                      </span>
-
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-semibold text-slate-800 group-hover:text-blue-700">
-                          {place.name}
-                        </span>
-                        <span className="mt-1 block text-xs text-slate-500">
-                          {place.category}
-                        </span>
-                        <span className="mt-1 block text-xs leading-5 text-slate-400">
-                          {place.address}
-                        </span>
-                      </span>
-
-                      <Navigation
-                        size={15}
-                        className="mt-1 shrink-0 text-slate-300 transition group-hover:text-blue-600"
-                      />
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="px-4 py-10 text-center">
-                  <Search className="mx-auto text-slate-300" size={28} />
-                  <p className="mt-3 text-sm font-medium text-slate-700">
-                    No places found
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Try another name or category.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-auto border-t border-slate-100 bg-slate-50 p-4">
-              <div className="flex items-center gap-3">
-                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-blue-600 shadow-sm">
-                  <Navigation size={17} />
+            <div>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <label htmlFor="radius" className="text-sm font-semibold">
+                  Search radius
+                </label>
+                <span className="rounded-lg bg-blue-50 px-2.5 py-1 text-sm font-bold text-blue-700">
+                  {radius >= 1000
+                    ? `${(radius / 1000).toFixed(1)} km`
+                    : `${radius} m`}
                 </span>
-                <div>
-                  <p className="text-sm font-semibold">Surat, Gujarat</p>
-                  <p className="text-xs text-slate-500">India</p>
-                </div>
               </div>
+
+              <input
+                id="radius"
+                type="range"
+                min={500}
+                max={50000}
+                step={500}
+                value={radius}
+                onChange={(event) =>
+                  handleRadiusChange(Number(event.target.value))
+                }
+                className="w-full cursor-pointer accent-blue-600"
+              />
+
+              <div className="mt-1 flex justify-between text-xs text-slate-400">
+                <span>500 m</span>
+                <span>50 km</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-3 flex gap-2 lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileTab("list")}
+            className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold cursor-pointer ${
+              mobileTab === "list"
+                ? "bg-blue-600 text-white"
+                : "border border-slate-200 bg-white text-slate-600"
+            }`}
+          >
+            Results ({places.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab("map")}
+            className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold cursor-pointer ${
+              mobileTab === "map"
+                ? "bg-blue-600 text-white"
+                : "border border-slate-200 bg-white text-slate-600"
+            }`}
+          >
+            Map
+          </button>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-[380px_minmax(0,1fr)]">
+          <aside
+            className={`overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm ${
+              mobileTab === "list" ? "block" : "hidden"
+            } lg:block`}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 p-4">
+              <div>
+                <h3 className="font-semibold">Nearby places</h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  {loading ? "Searching..." : `${places.length} results found`}
+                </p>
+              </div>
+              <span className="rounded-xl bg-slate-100 p-2 text-slate-500">
+                <MapPinned size={19} />
+              </span>
+            </div>
+
+            <div className="max-h-[65vh] min-h-[300px] overflow-y-auto">
+              <NearbyPlacesList
+                places={places}
+                selectedId={selectedId}
+                onSelect={handlePlaceSelect}
+                loading={loading}
+                error={error}
+              />
             </div>
           </aside>
 
-          <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
+          <section
+            ref={mapSectionRef}
+            className={`overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm ${
+              mobileTab === "map" ? "block" : "hidden"
+            } lg:block`}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
               <div>
                 <h3 className="text-sm font-semibold">Interactive map</h3>
-                <p className="mt-1 text-xs text-slate-500">
-                  Select a marker or a location to explore
+                <p className="mt-1 max-w-[230px] truncate text-xs text-slate-500">
+                  {locationLabel}
                 </p>
               </div>
-              <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                Map ready
+              <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
+                {places.length} places
               </span>
             </div>
 
-            <div className="relative h-[60vh] min-h-[420px] w-full sm:h-[70vh] lg:h-[calc(100vh-245px)] lg:min-h-[520px]">
-              <GoogleMapView key={retry} onReady={handleMapReady} />
+            <div className="relative h-[65vh] min-h-[420px] w-full lg:h-[calc(100vh-290px)] lg:min-h-[540px]">
+              <GoogleMapView
+                center={mapCenter}
+                mapId="DEMO_MAP_ID"
+                places={places}
+                selectedId={selectedId}
+                onSelect={handlePlaceSelect}
+                onClose={() => setSelectedId(null)}
+                onMapReady={handleMapReady}
+              />
+              <MapControls
+                map={map}
+                mapType={mapType}
+                onMapTypeChange={handleMapTypeChange}
+                onReset={handleMapReset}
+              />
             </div>
           </section>
         </div>
 
         <footer className="py-5 text-center text-xs text-slate-400">
-          Map data and imagery provided by Google Maps.
+          Place information and map data provided by Google Maps.
         </footer>
       </section>
+
+      {locationError && (
+        <div
+          className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setLocationError(null);
+            }
+          }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="location-error-title"
+            aria-describedby="location-error-description"
+            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl"
+          >
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-600">
+                <LocateFixed size={25} />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <h2
+                  id="location-error-title"
+                  className="text-lg font-bold text-slate-900"
+                >
+                  {locationError.title}
+                </h2>
+
+                <p
+                  id="location-error-description"
+                  className="mt-2 text-sm leading-6 text-slate-600"
+                >
+                  {locationError.message}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setLocationError(null)}
+                aria-label="Close location error"
+                className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              >
+                <span className="text-xl leading-none">&times;</span>
+              </button>
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setLocationError(null);
+                  handleCurrentLocation();
+                }}
+                className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700"
+              >
+                Try Again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
 export default function App() {
+  const [apiError, setApiError] = useState(false);
+  const handleApiError = useCallback((error: unknown) => {
+    console.error("Google Maps failed to load:", error);
+    setApiError(true);
+  }, []);
+
   if (!API_KEY) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-50 p-5">
-        <section className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-9">
-          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
-            <MapPin size={28} />
-          </span>
-
-          <p className="mb-2 mt-6 text-xs font-bold uppercase tracking-[0.2em] text-amber-600">
-            Setup required
+        <div className="max-w-lg rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+          <h1 className="text-xl font-bold">Google Maps setup required</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-600">
+            Copy .env.example to .env, add your Google Maps API key, and restart
+            Vite. Enable Maps JavaScript API and Places API (New), enable
+            billing, and allow this site in the key's HTTP referrer
+            restrictions.
           </p>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            Add your Google Maps demo key
+        </div>
+      </main>
+    );
+  }
+
+  if (apiError) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 p-5">
+        <div className="max-w-lg rounded-2xl border border-red-200 bg-white p-8 shadow-sm">
+          <h1 className="text-xl font-bold text-slate-900">
+            Google Maps could not load
           </h1>
-          <p className="mt-3 text-sm leading-6 text-slate-500">
-            Create a{" "}
-            <code className="rounded bg-slate-100 px-1.5 py-0.5">.env</code>{" "}
-            file in your project root and add the following line:
+          <p className="mt-3 text-sm leading-6 text-slate-600">
+            Verify your API key, billing account, enabled Maps JavaScript API
+            and Places API (New), and HTTP referrer restrictions. Then reload
+            the page.
           </p>
-
-          <pre className="mt-4 overflow-x-auto rounded-xl bg-slate-950 p-4 text-sm text-emerald-300">
-            VITE_GOOGLE_MAPS_API_KEY=your_demo_key_here
-          </pre>
-
-          <p className="mt-4 text-sm leading-6 text-slate-500">
-            Save the file and restart the Vite development server.
-          </p>
-
-          <a
-            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200"
-            href="https://developers.google.com/maps/documentation/javascript/demo-key"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Learn about the Google Maps demo key
-            <Navigation size={16} />
-          </a>
-        </section>
+        </div>
       </main>
     );
   }
 
   return (
-    <APIProvider apiKey={API_KEY}>
-      <MapApplication />
+    <APIProvider
+      apiKey={API_KEY}
+      libraries={["places"]}
+      onError={handleApiError}
+    >
+      <NearbyPlacesApp />
     </APIProvider>
   );
 }

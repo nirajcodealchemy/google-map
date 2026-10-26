@@ -1,90 +1,101 @@
-import MapControls from "./MapControls";
-import LocationMarkers from "./LocationMarkers";
-import type { MapLocation } from "../types/location";
-import { Map, useMap } from "@vis.gl/react-google-maps";
-import { useCallback, useEffect, useState } from "react";
-import { INITIAL_ZOOM, SURAT_CENTER, SURAT_LOCATIONS } from "../data/locations";
+import { useEffect, useRef } from "react";
+import {
+  AdvancedMarker,
+  InfoWindow,
+  Map,
+  useMap,
+} from "@vis.gl/react-google-maps";
+import { MapPin } from "lucide-react";
+import type { NearbyPlace } from "../types/place";
 
 type Props = {
   mapId?: string;
-  onReady: (map: google.maps.Map | null) => void;
+  places: NearbyPlace[];
+  selectedId: string | null;
+  center: google.maps.LatLngLiteral;
+  onClose: () => void;
+  onSelect: (place: NearbyPlace) => void;
+  onMapReady: (map: google.maps.Map | null) => void;
 };
 
-function MapContents({ mapId, onReady }: Props) {
+function MapContents({
+  mapId,
+  center,
+  places,
+  selectedId,
+  onSelect,
+  onClose,
+  onMapReady,
+}: Props) {
   const map = useMap();
-
-  const [mapType, setMapType] = useState<"roadmap" | "satellite">("roadmap");
-  const [selected, setSelected] = useState<MapLocation | null>(null);
+  const previousCenter = useRef(center);
 
   useEffect(() => {
-    onReady(map ?? null);
+    onMapReady(map ?? null);
 
-    return () => onReady(null);
-  }, [map, onReady]);
+    return () => onMapReady(null);
+  }, [map, onMapReady]);
 
-  const resetMap = useCallback(() => {
+  useEffect(() => {
     if (!map) return;
 
-    map.setCenter(SURAT_CENTER);
-    map.setZoom(INITIAL_ZOOM);
-    map.setMapTypeId("roadmap");
+    if (
+      previousCenter.current.lat !== center.lat ||
+      previousCenter.current.lng !== center.lng
+    ) {
+      map.panTo(center);
+      previousCenter.current = center;
+    }
+  }, [center, map]);
 
-    setMapType("roadmap");
-    setSelected(null);
-  }, [map]);
-
-  const selectLocation = useCallback(
-    (location: MapLocation) => {
-      setSelected(location);
-      map?.panTo(location.position);
-      map?.setZoom(15);
-    },
-    [map],
-  );
-
-  const changeMapType = useCallback(
-    (type: "roadmap" | "satellite") => {
-      setMapType(type);
-      map?.setMapTypeId(type);
-    },
-    [map],
-  );
+  const selected = places.find((place) => place.id === selectedId) ?? null;
 
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-slate-100">
-      <Map
-        mapId={mapId}
-        defaultCenter={SURAT_CENTER}
-        defaultZoom={INITIAL_ZOOM}
-        mapTypeId={mapType}
-        gestureHandling="greedy"
-        fullscreenControl
-        streetViewControl={false}
-        mapTypeControl={false}
-        zoomControl={false}
-        clickableIcons={false}
-        className="h-full min-h-screen w-full"
-      >
-        <LocationMarkers
-          locations={SURAT_LOCATIONS}
-          selected={selected}
-          onSelect={selectLocation}
-          onClose={() => setSelected(null)}
-        />
-      </Map>
+    <Map
+      mapId={mapId ?? "DEMO_MAP_ID"}
+      defaultCenter={center}
+      defaultZoom={13}
+      gestureHandling="greedy"
+      mapTypeControl={false}
+      streetViewControl={false}
+      fullscreenControl
+      className="h-full w-full"
+    >
+      {places.map((place) => {
+        const active = selectedId === place.id;
 
-      <MapControls
-        map={map ?? null}
-        mapType={mapType}
-        onMapTypeChange={changeMapType}
-        onReset={resetMap}
-      />
+        return (
+          <AdvancedMarker
+            key={place.id}
+            position={place.position}
+            title={place.name}
+            onClick={() => onSelect(place)}
+            zIndex={active ? 100 : 1}
+          >
+            <div
+              className={`flex h-9 w-9 items-center justify-center rounded-full border-2 border-white text-white shadow-lg transition ${
+                active ? "scale-125 bg-blue-700" : "bg-red-500 hover:scale-110"
+              }`}
+            >
+              <MapPin size={19} fill="currentColor" />
+            </div>
+          </AdvancedMarker>
+        );
+      })}
 
-      <div className="pointer-events-none absolute bottom-4 left-4 z-10 flex items-center gap-2 rounded-xl border border-white/70 bg-white/95 px-3 py-2 text-xs font-medium text-slate-700 shadow-lg backdrop-blur">
-        <span className="h-2 w-2 rounded-full bg-emerald-500" />
-        Surat, Gujarat, India
-      </div>
-    </div>
+      {selected && (
+        <InfoWindow position={selected.position} onCloseClick={onClose}>
+          <div className="max-w-[240px] p-1">
+            <h3 className="text-sm font-bold text-slate-900">
+              {selected.name}
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-slate-600">
+              {selected.address}
+            </p>
+          </div>
+        </InfoWindow>
+      )}
+    </Map>
   );
 }
 

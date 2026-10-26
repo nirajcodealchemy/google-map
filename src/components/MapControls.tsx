@@ -20,7 +20,7 @@ export default function MapControls({
   onReset,
 }: MapControlsProps) {
   const buttonClass =
-    "flex h-10 w-10 items-center justify-center rounded-xl text-slate-600 transition hover:bg-blue-50 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300 disabled:cursor-not-allowed disabled:opacity-40";
+    "flex h-10 w-10 items-center cursor-pointer justify-center rounded-xl text-slate-600 transition hover:bg-blue-50 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300 disabled:cursor-not-allowed disabled:opacity-40";
 
   return (
     <div className="absolute right-4 top-16 z-10 flex flex-col gap-3">
@@ -67,6 +67,8 @@ export default function MapControls({
           type="button"
           title="Roadmap view"
           aria-label="Roadmap view"
+          aria-pressed={mapType === "roadmap"}
+          disabled={!map}
           onClick={() => onMapTypeChange("roadmap")}
           className={`${buttonClass} ${
             mapType === "roadmap" ? "bg-blue-50 text-blue-600" : ""
@@ -79,6 +81,8 @@ export default function MapControls({
           type="button"
           title="Satellite view"
           aria-label="Satellite view"
+          aria-pressed={mapType === "satellite"}
+          disabled={!map}
           onClick={() => onMapTypeChange("satellite")}
           className={`${buttonClass} ${
             mapType === "satellite" ? "bg-blue-50 text-blue-600" : ""
